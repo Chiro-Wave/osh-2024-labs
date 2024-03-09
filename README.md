@@ -1,2 +1,2 @@
-# osh-2024-labs
-Yibo Yang's repository for 2024 OSH labs
+# OSH 2024 labs
+Yibo Yang's repository for OSH 2024 labs
