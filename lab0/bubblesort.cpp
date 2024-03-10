@@ -11,6 +11,12 @@ void bubbleSort(std::vector<int> &arr)
             if (arr[j] > arr[j + 1])
             {
                 std::swap(arr[j], arr[j + 1]);
+#ifdef PRINT_VECTOR
+                std::cout << "Round " << i + 1 << ": ";
+                for (int num : arr)
+                    std::cout << num << " ";
+                std::cout << std::endl;
+#endif
             }
         }
     }
