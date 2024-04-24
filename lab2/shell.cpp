@@ -12,7 +12,10 @@
 #include <unistd.h>
 // wait
 #include <sys/wait.h>
-
+// file
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 std::vector<std::string> split(std::string s, const std::string &delimiter);
 const char *getHomeDirectory();
 int main()
@@ -97,12 +100,50 @@ int main()
     // 关闭：-1；开启：文件描述符
     int prev_pipefd[2] = {-1, -1};
     int pipefd[2];
+    int file_r = -1; //< 读
+    int file_w = -1; //> 覆写  >> 追加
     for (i = 0, j = 0, k = 0; i < args.size(); i++)
     {
-      if (args[i][0] == '|') // 根据'|'来分割命令
+      if (args[i].compare("|") == 0) // 根据'|'来分割命令
       {
         arg_ptrs[j][k] = nullptr; // 使用exec p系列，每条命令的argv都需要以nullptr结尾
         j++, k = 0;
+        continue;
+      }
+      if (args[i].compare(">>") == 0)
+      {
+        if (i + 1 == args.size())
+        {
+          perror("Missing target file after \">>\"");
+          return 0;
+        }
+        if (file_w != -1) // 错误检查：有多个>或>>存在，仅最后一个有效，此前打开的文件要关闭
+          close(file_w);
+        file_w = open(args[++i].c_str(), O_WRONLY | O_APPEND);
+        continue;
+      }
+      if (args[i].compare(">") == 0)
+      {
+        if (i + 1 == args.size())
+        {
+          perror("Missing target file after \">\"");
+          return 0;
+        }
+        if (file_w != -1) // 错误检查：有多个>或>>存在，仅最后一个有效，此前打开的文件要关闭
+          close(file_w);
+        file_w = open(args[++i].c_str(), O_WRONLY | O_TRUNC);
+        continue;
+      }
+      if (args[i].compare("<") == 0)
+      {
+        if (i + 1 == args.size())
+        {
+          perror("Missing target file after \"<\"");
+          return 0;
+        }
+        if (file_r != -1) // 错误检查：有多个<存在，仅最后一个有效，此前打开的文件要关闭
+          close(file_r);
+        file_r = open(args[++i].c_str(), O_RDONLY);
         continue;
       }
       arg_ptrs[j][k] = &args[i][0];
@@ -124,13 +165,18 @@ int main()
       {
         // 关闭当前管道的读取端
         close(pipefd[0]);
+        // 如果是第一条命令，可能需要将标准输入重定向到指定文件
+        if (i == 0 && file_r != -1)
+          dup2(file_r, STDIN_FILENO);
         // 如果不是第一条命令，则将标准输入重定向到前一个管道的读取端
         if (prev_pipefd[0] != -1)
           dup2(prev_pipefd[0], STDIN_FILENO);
         // 如果不是最后一条命令，则将标准输出重定向到当前管道的写入端
         if (i + 1 != command_num)
           dup2(pipefd[1], STDOUT_FILENO);
-
+        // 如果是最后一条命令，可能需要将标准输出重定向到指定文件
+        if (i + 1 == command_num && file_w != -1)
+          dup2(file_w, STDOUT_FILENO);
         execvp(arg_ptrs[i][0], arg_ptrs[i]); // 传入
         perror("execvp() error");
         return 0;
@@ -149,6 +195,14 @@ int main()
       // 对于最后一条命令，关闭当前管道的读取端
       if (i + 1 == command_num)
         close(pipefd[0]);
+      // 对于最后一条命令，关闭所有已打开的文件
+      if (i + 1 == command_num)
+      {
+        if (file_r != -1)
+          close(file_r);
+        if (file_w != -1)
+          close(file_w);
+      }
       // 保存当前管道的读取端和写入端，以便下一次迭代使用
       prev_pipefd[0] = pipefd[0];
       prev_pipefd[1] = pipefd[1];
