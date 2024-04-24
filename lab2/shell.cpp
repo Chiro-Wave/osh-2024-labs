@@ -22,6 +22,9 @@ int main()
 
   // 用来存储读入的一行命令
   std::string cmd;
+  size_t i = 0, j = 0, k = 0;
+  // 保存 shell 的标准输入文件描述符
+  int shell_fd = dup(STDIN_FILENO);
   while (true)
   {
     // 打印提示符
@@ -32,6 +35,9 @@ int main()
 
     // 按空格分割命令为单词
     std::vector<std::string> args = split(cmd, " ");
+    // // 输出 args 中的每个单词
+    // for (const auto &word : args)
+    //   std::cout << word << std::endl;
 
     // 没有可处理的命令
     if (args.empty())
@@ -85,37 +91,70 @@ int main()
     }
 
     // 处理外部命令
-    pid_t pid = fork();
-
     // std::vector<std::string> 转 char **
-    char *arg_ptrs[args.size() + 1];
-    for (size_t i = 0; i < args.size(); i++)
+    char *arg_ptrs[args.size() + 1][args.size() + 1];
+    // 上一个管道的读取端和写入端
+    // 关闭：-1；开启：文件描述符
+    int prev_pipefd[2] = {-1, -1};
+    int pipefd[2];
+    for (i = 0, j = 0, k = 0; i < args.size(); i++)
     {
-      arg_ptrs[i] = &args[i][0];
+      if (args[i][0] == '|') // 根据'|'来分割命令
+      {
+        arg_ptrs[j][k] = nullptr; // 使用exec p系列，每条命令的argv都需要以nullptr结尾
+        j++, k = 0;
+        continue;
+      }
+      arg_ptrs[j][k] = &args[i][0];
+      k++;
     }
-    // exec p 系列的 argv 需要以 nullptr 结尾
-    arg_ptrs[args.size()] = nullptr;
+    arg_ptrs[j][k] = nullptr; // 最后一条命令也以nullptr结尾
+    int command_num = j + 1;  // 分割后的命令数
 
-    if (pid == 0)
+    for (i = 0; i < command_num; i++)
     {
-      // 这里只有子进程才会进入
-      // execvp 会完全更换子进程接下来的代码，所以正常情况下 execvp 之后这里的代码就没意义了
-      // 如果 execvp 之后的代码被运行了，那就是 execvp 出问题了
-      execvp(args[0].c_str(), arg_ptrs);
+      // pipefd[0] 存储用于读取的文件描述符，pipefd[1] 存储用于写入的文件描述符
+      if (pipe(pipefd) == -1)
+        perror("pipe() error");
+      // 创建新进程，父进程返回进程标识符process id，子进程此处返回0
+      pid_t pid = fork();
 
-      // 所以这里直接报错
-      exit(255);
-    }
+      // 仅子进程
+      if (pid == 0)
+      {
+        // 关闭当前管道的读取端
+        close(pipefd[0]);
+        // 如果不是第一条命令，则将标准输入重定向到前一个管道的读取端
+        if (prev_pipefd[0] != -1)
+          dup2(prev_pipefd[0], STDIN_FILENO);
+        // 如果不是最后一条命令，则将标准输出重定向到当前管道的写入端
+        if (i + 1 != command_num)
+          dup2(pipefd[1], STDOUT_FILENO);
 
-    // 这里只有父进程（原进程）才会进入
-    int ret = wait(nullptr);
-    if (ret < 0)
-    {
-      std::cout << "wait failed";
+        execvp(arg_ptrs[i][0], arg_ptrs[i]); // 传入
+        perror("execvp() error");
+        return 0;
+        // 子进程结束
+      }
+
+      // 仅父进程
+      int ret = wait(nullptr);
+      if (ret < 0)
+        perror("wait failed");
+      // 关闭前一个管道的读取端
+      if (prev_pipefd[0] != -1)
+        close(prev_pipefd[0]);
+      // 关闭当前管道的写入端
+      close(pipefd[1]);
+      // 对于最后一条命令，关闭当前管道的读取端
+      if (i + 1 == command_num)
+        close(pipefd[0]);
+      // 保存当前管道的读取端和写入端，以便下一次迭代使用
+      prev_pipefd[0] = pipefd[0];
+      prev_pipefd[1] = pipefd[1];
     }
   }
 }
-
 // 经典的 cpp string split 实现
 // https://stackoverflow.com/a/14266139/11691878
 std::vector<std::string> split(std::string s, const std::string &delimiter)
@@ -139,6 +178,5 @@ const char *getHomeDirectory()
   const char *homeDir = std::getenv("HOME");
   if (homeDir == nullptr)
     perror("getenv(\"HOME\") error");
-  else
-    return homeDir;
+  return homeDir;
 }
