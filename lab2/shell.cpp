@@ -16,10 +16,25 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+// signal
+#include <signal.h>
 std::vector<std::string> split(std::string s, const std::string &delimiter);
 const char *getHomeDirectory();
+bool print_hit_en = false;
+void signal_handler(int signal)
+{
+  if (signal == SIGINT)
+  {
+    // Ctrl+C用于丢弃命令：立刻换行打印提示符；Ctrl+C用于结束进程：无额外输出
+    if (print_hit_en)
+      std::cout << "\n$ " << std::flush; // 立刻换行打印提示符，而不是在getline等待到换行符后输出
+    std::cin.sync();                     // 清空输入缓冲区
+  }
+}
 int main()
 {
+  // 主进程使用自定义函数处理ctrl+C信号
+  signal(SIGINT, signal_handler);
   // 不同步 iostream 和 cstdio 的 buffer
   std::ios::sync_with_stdio(false);
 
@@ -34,13 +49,11 @@ int main()
     std::cout << "$ ";
 
     // 读入一行。std::getline 结果不包含换行符。
+    print_hit_en = true; // Ctrl+C用于丢弃命令时：允许额外的提示符打印
     std::getline(std::cin, cmd);
-
+    print_hit_en = false; // 关闭使能，此外Ctrl+C用于结束进程
     // 按空格分割命令为单词
     std::vector<std::string> args = split(cmd, " ");
-    // // 输出 args 中的每个单词
-    // for (const auto &word : args)
-    //   std::cout << word << std::endl;
 
     // 没有可处理的命令
     if (args.empty())
@@ -163,6 +176,8 @@ int main()
       // 仅子进程
       if (pid == 0)
       {
+        // 恢复对ctrl+c的响应
+        signal(SIGINT, SIG_DFL);
         // 关闭当前管道的读取端
         close(pipefd[0]);
         // 如果是第一条命令，可能需要将标准输入重定向到指定文件
