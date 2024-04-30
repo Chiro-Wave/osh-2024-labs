@@ -1,9 +1,17 @@
+**`split`**
+
+基于助教给出的示例，稍作修改，使分割字符的连续空格不会影响命令参数的识别
+
 **`cd`**
 
 chdir()接受一个字符型指针作为路径跳转的参数，不能留空。相对路径和绝对路径都被接受。
 **选做** `cd` 在没有第二个参数时，默认进入家目录。通过`std::getenv("HOME")`来获取环境变量"HOME"对应的路径，作为参数传入chdir()即可。
 
 **`重定向`**
+
+使用`<`但指定文件或路径不存在时会打印报错信息并跳过此命令，sheel进入下个循环，等待输入。
+使用`>`或`>>`但指定文件或路径不存在时会创建对应文件并完成命令。
+使用`<`、`>`或`>>`但缺少文件名参数或因其他原因文件打开失败，会打印报错信息并跳过此命令，shell进入下个循环，等待输入
 
 > 考虑重定向和管道的组合使用在Ubuntu中的实际效果
 >
@@ -30,15 +38,35 @@ chdir()接受一个字符型指针作为路径跳转的参数，不能留空。�
 >      {
 >        if (i + 1 == args.size())
 >        {
->          perror("Missing target file after \">>\"");
->          return 0;
+>          std::cout << ("Missing target file after \">>\"") << std::endl;
+>          file_error = true;
+>          break;
 >        }
 >        if (file_w != -1) // 错误检查：有多个>或>>存在，仅最后一个有效，此前打开的文件要关闭
 >          close(file_w);
->        file_w = open(args[++i].c_str(), O_WRONLY | O_APPEND);
+>        file_w = open(args[++i].c_str(), O_WRONLY | O_APPEND | O_CREAT);
+>        if (file_w == -1)
+>        {
+>          perror("file open error: ");
+>          file_error = true;
+>          break;
+>        }
 >        continue;
 >      }
 >```
+
+**`信号处理`**
+`CTRL+C` 正确终止正在运行的进程
+`CTRL+C` 在 shell 嵌套时也能正确终止正在运行的进程
+`CTRL+C` 可以丢弃命令
+
+使用signal()函数实现，第一个参数指定信号，第二个参数传入一个函数指针，可选择库自带的处理方式或自定义函数。
+
+```c++
+signal(SIGINT, signal_handler);
+```
+
+
 
 > **疑难杂症**
 >
