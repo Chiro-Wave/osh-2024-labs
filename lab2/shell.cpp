@@ -20,19 +20,14 @@
 #include <signal.h>
 // exit()
 #include <cstdlib>
+// strlen()
+#include <cstring>
 std::vector<std::string> split(std::string s, const std::string &delimiter);
 const char *getHomeDirectory();
+void signal_handler(int signal);
+
 bool print_hit_en = false;
-void signal_handler(int signal)
-{
-  if (signal == SIGINT)
-  {
-    // Ctrl+C用于丢弃命令：立刻换行打印提示符；Ctrl+C用于结束进程：无额外输出
-    if (print_hit_en)
-      std::cout << "\n$ " << std::flush; // 立刻换行打印提示符，而不是在getline等待到换行符后输出
-    std::cin.sync();                     // 清空输入缓冲区
-  }
-}
+
 int main()
 {
   // 不同步 iostream 和 cstdio 的 buffer
@@ -47,15 +42,42 @@ int main()
   int shell_fd = dup(STDIN_FILENO);
 
   pid_t pid_bg_arr[1000] = {0}; // 后台进程数组，保存后台进程id，数组首位存储后台进程数
+  std::string history[1000];    // 历史命令数组，首位留空
+  int history_NO = 0;           // 当前命令序号，指针，指向栈顶元素
+
   while (true)
   {
     // 打印提示符
     std::cout << "$ ";
 
-    // 读入一行。std::getline 结果不包含换行符。
     print_hit_en = true; // Ctrl+C用于丢弃命令时：允许额外的提示符打印
-    std::getline(std::cin, cmd);
+    // 读入一行。std::getline 结果不包含换行符。
+    if (!std::getline(std::cin, cmd)) // 输入命令，若为Ctrl+D(EOF)，则终止终端
+      return 0;
     print_hit_en = false; // 关闭使能，此外Ctrl+C用于结束进程
+
+    if (cmd.compare("!!") == 0) // !!命令，执行上一条命令
+    {
+      if (history_NO == 0)
+      {
+        std::cout << "history command do not exist" << std::endl;
+        continue;
+      }
+      cmd = history[history_NO];
+      std::cout << cmd << std::endl;
+    }
+    else if (cmd[0] == '!') // !n命令，执行histroy[n]
+    {
+      if (cmd[1] - '0' > history_NO) // 序号过大
+      {
+        std::cout << "wrong history number" << std::endl;
+        continue;
+      }
+      cmd = history[cmd[1] - '0'];
+      std::cout << cmd << std::endl;
+    }
+    if (history_NO == 0 || cmd.compare(history[history_NO]) != 0) // 若本条命令与上一条命令不同，则记入历史命令
+      history[++history_NO] = cmd;
     // 按空格分割命令为单词
     std::vector<std::string> args = split(cmd, " ");
 
@@ -118,7 +140,13 @@ int main()
       pid_bg_arr[0] = 0; // 全部后台进程运行结束，重新记录未来的后台进程id
       continue;
     }
-
+    if (args[0] == "history") // history n：展示包括本命令的最近n条命令
+    {
+      i = history_NO > std::stoi(args[1]) ? history_NO - std::stoi(args[1]) + 1 : 1; // 从history_NO-n+1至history_NO
+      for (; i <= history_NO; i++)
+        std::cout << "    " << i << "  " << history[i] << std::endl;
+      continue;
+    }
     // 处理外部命令
     // std::vector<std::string> 转 char **
     char *arg_ptrs[args.size() + 1][args.size() + 1];
@@ -128,8 +156,10 @@ int main()
     // 关闭：-1；开启：文件描述符
     int prev_pipefd[2] = {-1, -1};
     int pipefd[2];
-    int file_r = -1; //< 读
-    int file_w = -1; //> 覆写  >> 追加
+    int file_r = -1;             //< 读
+    int file_w = -1;             //> 覆写  >> 追加
+    int pipe_text[2] = {-1, -1}; //<<< 文本重定向。文本将写入管道，标准输入将重定向到管道读取端
+    const char *text = NULL;     //<<< 文本重定向。该指针指向对应文本。
     bool file_error = false;
     for (i = 0, j = 0, k = 0; i < args.size(); i++)
     {
@@ -137,6 +167,30 @@ int main()
       {
         arg_ptrs[j][k] = nullptr; // 使用exec p系列，每条命令的argv都需要以nullptr结尾
         j++, k = 0;
+        continue;
+      }
+      if (args[i].compare("<<<") == 0) //>>>
+      {
+        if (i + 1 == args.size())
+        {
+          std::cout << ("Missing target text after \"<<<\"") << std::endl;
+
+          file_error = true;
+          break;
+        }
+        if (pipe(pipe_text) == -1) // 创建管道
+        {
+          perror("pipe_text failed:");
+          return 1;
+        }
+        text = (args[++i] + '\n').c_str();
+        // 写入文本到管道
+        if (write(pipe_text[1], text, strlen(text)) == -1)
+        {
+          perror("write to pipe_text failed:");
+          return 1;
+        }
+        close(pipe_text[1]); // 关闭写入端
         continue;
       }
       if (args[i].compare(">>") == 0)
@@ -149,7 +203,7 @@ int main()
         }
         if (file_w != -1) // 错误检查：有多个>或>>存在，仅最后一个有效，此前打开的文件要关闭
           close(file_w);
-        file_w = open(args[++i].c_str(), O_WRONLY | O_APPEND | O_CREAT);
+        file_w = open(args[++i].c_str(), O_WRONLY | O_APPEND | O_CREAT, 0666);
         if (file_w == -1)
         {
           perror("file open error: ");
@@ -168,7 +222,7 @@ int main()
         }
         if (file_w != -1) // 错误检查：有多个>或>>存在，仅最后一个有效，此前打开的文件要关闭
           close(file_w);
-        file_w = open(args[++i].c_str(), O_WRONLY | O_TRUNC | O_CREAT);
+        file_w = open(args[++i].c_str(), O_WRONLY | O_TRUNC | O_CREAT, 0666);
         if (file_w == -1)
         {
           perror("file open error: ");
@@ -239,9 +293,11 @@ int main()
 
           // 关闭当前管道的读取端
           close(pipefd[0]);
-          // 如果是第一条命令，可能需要将标准输入重定向到指定文件
+          // 如果是第一条命令，可能需要将标准输入重定向到指定文件/文本
           if (i == 0 && file_r != -1)
             dup2(file_r, STDIN_FILENO);
+          else if (i == 0 && pipe_text[0] != -1)
+            dup2(pipe_text[0], STDIN_FILENO);
           // 如果不是第一条命令，则将标准输入重定向到前一个管道的读取端
           if (prev_pipefd[0] != -1)
             dup2(prev_pipefd[0], STDIN_FILENO);
@@ -276,6 +332,7 @@ int main()
             close(file_r);
           if (file_w != -1)
             close(file_w);
+          close(pipe_text[0]);
         }
         // 保存当前管道的读取端和写入端，以便下一次迭代使用
         prev_pipefd[0] = pipefd[0];
@@ -284,6 +341,17 @@ int main()
     }
     if (bg_op && pid_bg == 0) // 后台选项：true，后台进程在此结束，主进程继续；false，主进程继续
       exit(0);
+  }
+}
+// 自定义的信号处理函数
+void signal_handler(int signal)
+{
+  if (signal == SIGINT)
+  {
+    // Ctrl+C用于丢弃命令：立刻换行打印提示符；Ctrl+C用于结束进程：无额外输出
+    if (print_hit_en)
+      std::cout << "\n$ " << std::flush; // 立刻换行打印提示符，而不是在getline等待到换行符后输出
+    std::cin.sync();                     // 清空输入缓冲区
   }
 }
 // 经典的 cpp string split 实现
