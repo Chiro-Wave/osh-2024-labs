@@ -1,5 +1,4 @@
 #include "server.h"
-#include "thread.h"
 
 // 读取客户端发送来的数据，并解析
 void handle_clnt(int clnt_sock)
@@ -167,19 +166,43 @@ int main()
     // 使得 serv_sock 套接字进入监听状态，开始等待客户端发起请求
     listen(serv_sock, MAX_CONN);
 
-    // 接收客户端请求，获得一个可以与客户端通信的新的生成的套接字 clnt_sock
-    struct sockaddr_in clnt_addr;
+    int clnt_sock;                // 接收客户端请求，获得一个可以与客户端通信的新的生成的套接字 clnt_sock
+    struct sockaddr_in clnt_addr; // 储存accept返回的客户端的IP和接口信息，本实验中未用到
     socklen_t clnt_addr_size = sizeof(clnt_addr);
 
-    threadpool_t *pool = threadpool_init(MAX_THREADS, MAX_QUEUE);
+    fd_set readset;              // 1024位对应1024fd，select检测其中设为1的fd的读缓冲区是否有数据待读取
+    fd_set tmp;                  // 由于每次select会变更readset作为返回值，使用tmp替代
+    struct timeval tv = {5, 0};  // select单次检测的最大时间，设为5s+0μs=5s
+    int maxfd = serv_sock;       // select所检测的所有文件描述符的最大值，+1即为select的第一个参数，用于限制select检测的范围
+    FD_ZERO(&readset);           // readset所有位初始置零
+    FD_SET(serv_sock, &readset); // 初始将要检测是否有数据待读取的监听器放入readset
+
     while (1) // 一直循环
     {
-        // 当没有客户端连接时，accept() 会阻塞程序执行，直到有客户端连接进来
-        int clnt_sock = accept(serv_sock, (struct sockaddr *)&clnt_addr, &clnt_addr_size);
-        // 处理客户端的请求
-        // handle_clnt(clnt_sock);
-        if (clnt_sock != -1)
-            threadpool_add(pool, handle_clnt, clnt_sock);
+        tmp = readset;
+        // select检测待读取集合中是否有数据待读取
+        int ret = select(maxfd + 1, &tmp, NULL, NULL, &tv);
+        if (!ret) // 5s内没有检测到有数据的读缓冲区，将select的最后一个参数改为NULL也能实现不断等待
+            continue;
+        if (FD_ISSET(serv_sock, &tmp)) // 服务器套接字有数据待读取
+        {
+            // select已判断serv_sock的读缓冲区有数据待读取，此处一定不阻塞
+            clnt_sock = accept(serv_sock, (struct sockaddr *)&clnt_addr, &clnt_addr_size);
+            // accept返回的clnt_sock也是文件描述符，用于通信，在下个周期由select检测
+            FD_SET(clnt_sock, &readset);
+            // 更新最大文件描述符
+            maxfd = clnt_sock > maxfd ? clnt_sock : maxfd;
+        }
+        for (int i = 0; i <= maxfd; i++)
+        {
+            if (i != serv_sock && FD_ISSET(i, &tmp)) // 用于通信的文件描述符的读缓冲区有数据
+            {
+                // 处理客户端的请求
+                handle_clnt(i);
+                // 移除已完成的通信的检测
+                FD_CLR(i, &readset);
+            }
+        }
     }
 
     // 实际上这里的代码不可到达，可以在 while 循环中收到 SIGINT 信号时主动 break
